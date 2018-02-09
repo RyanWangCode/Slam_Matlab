@@ -46,16 +46,19 @@ function [posEst,oriEst,radiusEst, posVar,oriVar,radiusVar,estState] = Estimator
 %                   Will be input to this function at the next call.
 
 %% Mode 1: Initialization
+
 if (tm == 0)
     % Do the initialization of your estimator here!
     
     % Replace the following:
     posEst = [0 0];
     oriEst = 0;
-    posVar = [0 0];
-    oriVar = 0;
-    radiusEst = 0;
-    radiusVar = 0;
+    posVar = [knownConst.TranslationStartBound.^2 /3 knownConst.TranslationStartBound.^2 / 3];
+    oriVar = knownConst.RotationStartBound.^2 / 6;
+    radiusEst = knownConst.NominalWheelRadius;
+    radiusVar = knownConst.WheelRadiusError.^2 / 3;
+    estState.P = diag([posVar,oriVar,radiusVar]);
+    estState.X = [0;0;0;radiusEst];    
     return;
 end
 
@@ -65,10 +68,86 @@ end
 % initializing.  Run the estimator.
 
 % Replace the following:
-posEst = [0 0];
-oriEst = 0;
-posVar = [0 0];
-oriVar = 0;
-radiusEst = 0;
-radiusVar = 0;
+% W0 = knownConst.NominalWheelRadius;
+Qv = knownConst.VelocityInputPSD;
+Qr = knownConst.AngleInputPSD;
+B = knownConst.WheelBase;
+P = estState.P;
+X0 = estState.X;
+dt = 0.1;
+
+X = X0 + [X0(4) * actuate(1) *cos(actuate(2)) * cos(X0(3)) * 0.1;X0(4) * actuate(1) *cos(actuate(2)) * sin(X0(3)) * 0.1;-X0(4) * actuate(1)*sin(actuate(2)) * 0.1/B; 0];
+ds = sense(1) - sqrt(X(1)^2 + X(2)^2);
+dr = sense(2) - X(3);
+
+A = [   
+0, 0, -X0(4) * actuate(1) *cos(actuate(2)) * sin(X0(3)), actuate(1) * cos(actuate(2)) * cos(X0(3));
+0, 0, X0(4) * actuate(1) *cos(actuate(2)) * cos(X0(3)), actuate(1) * cos(actuate(2)) * sin(X0(3));
+0, 0, 0 , -X0(4) * sin(actuate(2)) * actuate(1) / B;
+0, 0, 0, 0;
+];
+A = [   
+1, 0, -X0(4) * actuate(1) *cos(actuate(2)) * sin(X0(3)) * 0.1, actuate(1) * cos(actuate(2)) * cos(X0(3)) * 0.1;
+0, 1, X0(4) * actuate(1) *cos(actuate(2)) * cos(X0(3)) * 0.1, actuate(1) * cos(actuate(2)) * sin(X0(3)) * 0.1;
+0, 0, 1 , -X0(4) * sin(actuate(2)) * actuate(1) * 0.1 / B;
+0, 0, 0, 1;
+];
+if designPart == 1
+    T = eye(4);
+    Q = diag([0.01,0.01,0.0002,0]);
+else
+    T = [
+    X0(4) * actuate(1) * cos(actuate(2)) * cos(X0(3)), -X0(4) * actuate(1) * sin(actuate(2)) * cos(X0(3));
+    X0(4) * actuate(1) * cos(actuate(2)) * sin(X0(3)), -X0(4) * actuate(1) * sin(actuate(2)) * sin(X0(3));
+    -X0(4) * actuate(1) * sin(actuate(2))/B, -X0(4) * actuate(1)*cos(actuate(2)) * 0.1/B;
+    0, 0;
+    ];
+    Q = diag([Qv, Qr]);
+end
+
+% P = P + (A * P + P * A' + T * Q * T').* dt;
+P = (A * P * A' + T * Q * T');
+
+if sense(1) ~= inf && sense(2) ~= inf
+    H = [
+    X(1)/sqrt(X(1).^2 + X(2).^2), X(2)/sqrt(X(1).^2 + X(2).^2), 0, 0;
+    0, 0, 1, 0;
+    ];
+    R = [knownConst.DistNoise^2 / 6, 0; 0, knownConst.CompassNoise^2;];
+    K = P * H' /(H  * P * H' + R);        
+    X = X + K * [ds;dr];
+    P = (eye(4) - K * H) * P;
+elseif sense(1) ~= inf
+    H = [
+    X(1)/sqrt(X(1).^2 + X(2).^2), X(2)/sqrt(X(1).^2 + X(2).^2), 0, 0;
+    ];
+    R = knownConst.DistNoise^2 / 6;
+    K = P * H' /(H  * P * H' + R);        
+    X = X + K * ds;
+    P = (eye(4) - K * H) * P;
+elseif sense(2) ~= inf
+    H = [
+    0, 0, 1, 0;
+    ];
+    R = knownConst.CompassNoise^2;
+    K = P * H' /(H  * P * H' + R);        
+    X = X + K * dr;
+    P = (eye(4) - K * H) * P;
+end
+
+if tm < 10
+%     X
+%     actuate
+    sense
+end
+
+posEst = [X(1) X(2)];
+oriEst = X(3);
+posVar = [P(1,1) P(2,2)];
+oriVar = P(3,3);
+radiusEst = X(4);
+radiusVar = P(4,4);
+
+estState.P = P;
+estState.X = X;
 end
